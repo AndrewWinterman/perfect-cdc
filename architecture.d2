@@ -1,0 +1,195 @@
+src: Source Smartstore {
+  near: top-left
+  pg: App Data {
+    shape: cylinder
+    style.multiple: true
+  }
+  app: Application {
+    smartstore: {
+      shape: package
+    }
+  }
+  cdc: CDC Pod
+  polaroid: Polaroid Custom Resource {
+    shape: document
+  }
+  app.smartstore -> pg: Assign Org
+  app.smartstore <-> pg
+  pg -> cdc: Read WALog
+  cdc -> _.kafka.topic: Publish
+}
+
+polaroid: Polaroid Service
+kafka: Kafka (AWS MSK) {
+  topic: "Topic for Clerk Schema" {
+    shape: queue
+  }
+  near: center-left
+}
+
+dst: Destination Smartstore {
+  near: bottom-left
+  pg: App Data {
+    shape: cylinder
+    style.multiple: true
+  }
+  app: Application {
+    smartstore: {
+      shape: package
+    }
+  }
+  ingest: Ingest
+
+  app.smartstore <-> pg
+  ingest -> pg: Apply CDC Messages
+  ingest <- _.kafka.topic: Consume
+}
+
+scenarios: {
+  existing: {
+    s3: AWS S3 {
+      snapshot_files: Snapshot Files {
+        shape: page
+        style: {
+          multiple: true
+        }
+      }
+      manifest: "Snapshot Manifest (list of snpashot files)" {
+        shape: page
+      }
+      metadata: Metadata (parameters used to create snapshot) {
+        shape: page
+      }
+    }
+    dst: {
+      ingest: {
+        polaroid: "Polaroid" {
+          shape: step
+        }
+        backfill: "Backfill" {
+          shape: step
+        }
+        insync: "InSync" {
+          shape: step
+        }
+        polaroid -> backfill -> insync
+        polaroid -> csv to clerk -> to sql
+        backfill -> to sql
+        insync -> to sql
+      }
+      ingest.polaroid <-> states
+      ingest.backfill <-> states
+      ingest.insync <-> states
+      states: "State per org/schema" {
+        shape: stored_data
+        style: {
+          multiple: true
+        }
+      }
+
+      ingest -> _.polaroid: Download Snapshot
+    }
+
+    polaroid: {
+      control: Watch PolaroidSmartstore {
+        shape: step
+      }
+      scheduler: Every 3.5 days {
+        shape: step
+      }
+      plan: Compute SubQueries {
+        shape: step
+      }
+      snapshot: Issue Snapshot Query {
+        shape: step
+      }
+      control -> scheduler -> plan -> snapshot
+    }
+    polaroid -> s3.snapshot_files: list files
+    polaroid -> s3.manifest: write manifest
+    polaroid -> s3.metadata: write metadata
+    polaroid.snapshot -> src.pg: aws_s3.export_query_to_s3
+    src.pg -> s3.snapshot_files: AWS Magic
+    src.polaroid -> polaroid.control: Configure
+  }
+  proposed: {
+    src.polaroid -> polaroid: Confgure
+    polaroid.snapshot <-> src.pg: COPY TO STDOUT
+    polaroid.publish -> kafka.polaroid_topic: publish rows
+    kafka.polaroid_topic: "Polaroid Snapshots Topic" {
+      shape: queue
+    }
+    polaroid: {
+      grpc: api.PublishSnapshot {
+        shape: step
+      }
+      plan: compute subqueries {
+        shape: step
+      }
+      snapshot: copy to stdout {
+        shape: step
+      }
+      to clerk: to clerk {
+        shape: step
+      }
+      publish: kafka.produce {
+        shape: step
+      }
+      grpc -> plan -> snapshot -> to clerk -> publish
+    }
+
+    dst: {
+      ingest: {
+        locked_tomb: "Locked Tomb" {
+          shape: step
+        }
+        locked_tomb -> tombstones
+        tombstones: {
+          shape: stored_data
+        }
+        snapshot_metadata: Snapshot Data {
+          shape: stored_data
+        }
+        consumers: {
+          clerk: InSync Kafka Consumer
+          polaroid: Polaroid Kafka Consumer {
+            tooltip: |md
+              # Polaroid Consumer Lifecycle
+
+              To avoid excessive database interactions, polaroid consumer runs
+              if and only if there exists an org/schema pair that satisfies one of
+
+              1. has yet to request a snapshot
+              2. has yet to consume a snapshot's end offset.
+            |
+            start: {
+              shape: step
+            }
+            request: {
+              shape: step
+            }
+            consume: {
+              shape: step
+            }
+            shutdown: {
+              shape: step
+            }
+            start -> request -> consume -> shutdown
+          }
+        }
+        to sql: {
+          shape: step
+        }
+        consumers -> locked_tomb -> to sql -> _.pg
+        consumers.polaroid.start -> snapshot_metadata
+        consumers.polaroid.shutdown -> snapshot_metadata
+      }
+    }
+
+    (dst.ingest <- kafka.topic)[0]: null
+
+    dst.ingest.consumers.polaroid.request -> polaroid.grpc: ensure snapshot
+    dst.ingest.consumers.polaroid <- kafka.topic: Consume
+    dst.ingest.consumers.clerk <- kafka.polaroid_topic: Consume
+  }
+}

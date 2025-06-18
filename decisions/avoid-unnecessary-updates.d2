@@ -1,0 +1,28 @@
+kafka.clerk: {
+  shape: queue
+}
+kafka.polaroid: {
+  shape: queue
+}
+ingest.insync <- kafka.clerk
+ingest.polaroid <- kafka.polaroid
+
+ingest.state: {
+  shape: sql_table
+  org: uuid
+  schema: string
+  allowed: bool
+  snapshot_requested: timestamp
+  snapshot_finished: timestamp
+}
+
+ingest.insync -> ingest.state
+ingest.polaroid -> ingest.state
+
+explain: |md
+  # Rules
+
+  1. If and only if state.snapshot_requested = null; request a snapshot
+  2. for each row where snapshot_finished = null; consume from Polaroid kafka topic
+  3. If state.snapshot_finished != null, stop & remove consumer group
+|

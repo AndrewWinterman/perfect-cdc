@@ -1,0 +1,70 @@
+direction: right
+vars: {
+  table: "accounts"
+}
+
+layers: {
+  polaroid_already_sent: requested snapshot is fully in kafka {
+    shape: sequence_diagram
+
+    search: search
+    polaroid: Polaroid
+    metadata: snapshot metadata store {
+      shape: cylinder
+    }
+    kafka: Kafka Broker {
+      shape: queue
+      style.multiple: true
+    }
+    source_db: Source Database {
+      shape: sql_table
+    }
+
+    search -> polaroid: Request (schema, org, version, recent_enough )
+
+    polaroid -> metadata: check current snapshot metadata
+    metadata -> polaroid: metadata.start_time >= request.recent_enough?
+    metadata -> kafka: offset of recent_enough
+    kafka -> polaroid: (topic, partition, offset)
+    polaroid."kafka still has snapshot, and it's fresh enough"
+    polaroid -> search: return snapshot metadata about existing snapshot in kafka.
+  }
+
+  snapshot_partially_expired: the beginning of the snapshot has expired out of kafka. {
+    shape: sequence_diagram
+
+    search: search
+    polaroid: Polaroid
+    metadata: snapshot metadata store {
+      shape: cylinder
+    }
+    kafka: Polaroid Topic Broker {
+      shape: queue
+      style.multiple: true
+    }
+    source_db: Source Database {
+      shape: sql_table
+    }
+
+    search -> polaroid: Request (schema, org, version, recent_enough)
+
+    polaroid."check current snapshot metadata"
+    metadata -> polaroid: metadata.start_time >= request.recent_enough
+    metadata -> kafka: offset of request.recent_enough
+    kafka -> metadata: error: offset not found {
+      style.stroke: red
+    }
+    metadata."kafka only has part of the snapshot; replay"
+    metadata -> polaroid: request snapshot from source_db
+    snapshotting: {
+      polaroid -> search: start metadata stream
+      polaroid -> source_db: SELECT * FROM accounts WHERE publisher_version >= request.version
+      polaroid -> kafka: publish snapshot to kafka
+      polaroid -> metadata: update snapshot metadata
+      polaroid -> search: finish snapshot metadata stream
+    }
+    kafka -> kafka: log compaction reduces snapshot size {
+      style.stroke: green
+    }
+  }
+}

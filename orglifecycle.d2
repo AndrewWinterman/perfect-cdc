@@ -1,0 +1,78 @@
+direction: right
+
+existing: Existing {
+  shape: sequence_diagram
+  direction: down
+
+  orgservice: orgservice
+  users: App Users
+  src_app: Source
+  polaroid: Polaroid
+  dst_app: Destination
+  kafka: Kafka Broker
+
+  orgservice -> src_app: org created
+  orgservice -> dst_app: org created
+  src_app -> src_app: migrations
+  dst_app -> dst_app: migrations
+
+  missed: Events skipped by destination {
+    users -> src_app: client traffic
+    src_app -> kafka: start emitting events
+  }
+
+  establish_baseline: Baseline from Snapshot {
+    dst_app -> polaroid: grpc:GetSnapshot
+    polaroid -> dst_app: list of CSV files
+    dst_app <- polaroid: Download and apply CSV file
+  }
+
+  backfill: Replay events since snapshot {
+    dst_app: {
+      backfill_begins: Start ConsumerGroup at Snapshot start Timestamp
+    }
+    dst_app -> kafka: consume old events
+    dst_app: {
+      stitch: 'Close enough to head; "stich"'
+    }
+  }
+
+  in-sync: Destination In-Sync Consumer {
+    dst_app -> dst_app: org join main consumer group
+    dst_app -> kafka: consume live events
+  }
+}
+proposed: Proposed {
+  shape: sequence_diagram
+
+  orgservice: orgservice
+  users: App Users
+  src_app: Source
+  polaroid: Polaroid
+  dst_app: Destination
+  kafka: Kafka Broker
+
+  orgservice -> src_app: org created
+  orgservice -> dst_app: org created
+  src_app -> src_app: migrations
+  dst_app -> dst_app: migrations
+
+  missed: Events skipped by destination {
+    users -> src_app: client traffic
+    src_app -> kafka: start emitting events
+  }
+
+  in-sync: Destination starts consuming {
+    dst_app -> kafka: start consuming messages for new org
+    dst_app -> kafka: consume live events
+    captures_missed: Missed events represented in snapshot {
+      dst_app -> polaroid: grpc:Snapshot
+      polaroid -> kafka: Snapshot Events
+    }
+  }
+  rising_tide: RisingTidePurger {
+    polaroid -> dst_app: Report min_version
+    dst_app -> dst_app: DELETE WHERE version < min_version
+  }
+}
+existing -> proposed

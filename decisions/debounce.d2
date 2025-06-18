@@ -1,0 +1,51 @@
+explain: |md
+  # Debouncing Snapshots
+
+  PublishSnapshot requests can result in expensive operations
+
+  Dedupe them by checking whether there is already a relevant snapshot.
+
+  There is a relevant snapshot if:
+
+  1. Polaroid took a snapshot for the schema. This snapshot is the "existing" snapshot.
+  2. Primary clerk topic START is older than when existing snapshot was taken.
+  3. Polaroid topic still retains entire existing snapshot
+|
+
+dedupe snapshots: Sequence {
+  label.near: top-left
+
+  search
+  baikal
+  polaroid
+  clerk topic
+  polaroid topic
+  shape: sequence_diagram
+  clerk topic."retention is 7d"
+
+  at t=0: {
+    search -> polaroid: start snapshot
+    polaroid -> clerk topic: "when is your start"
+    clerk topic -> polaroid: "-7"
+    polaroid."No Snapshot Exists; start one"
+    polaroid -> search: "taking snapshot; send metadata"
+  }
+
+  at t=1: {
+    baikal -> polaroid: start snapshot
+    polaroid -> clerk topic: "when is your start"
+    clerk topic -> polaroid: "-6"
+    polaroid -> polaroid topic: Exists(partition, existing_snapshot.start_offset)
+    polaroid topic -> polaroid: offset exists
+    polaroid."last snapshot = 0; > clerk topic start; snapshot valid"
+    polaroid -> baikal: "snapshot exists; send metadata"
+  }
+
+  at t=8: {
+    baikal -> polaroid: start snapshot
+    polaroid -> clerk topic: "when is your start"
+    clerk topic -> polaroid: "1"
+    polaroid."last snapshot = 0; < clerk topic start; snapshot expired"
+    polaroid -> search: "taking snapshot; send metadata"
+  }
+}
