@@ -4,4 +4,42 @@ layers: {
   limit ingested events: {...@decisions/avoid-unnecessary-updates}
 
   orglifecycle: {...@orglifecycle}
+  tombstone_lock_concurrent_delete: {
+    sequence: |md
+      # 🔒🪦 Concurrent: Out-of-Order Deletes
+    | {
+      shape: sequence_diagram
+      kafka: Kafka Topic
+      tombstone: Tombstone Service
+      backfill: Backfill Consumer
+      insync: In-Sync Consumer
+      postgres: PostgreSQL
+
+      check_tombstone_race: Backfill & In-Sync Race {
+        kafka -> backfill: UPSERT (Version 1)
+        backfill -> tombstone: LockIfNews? (version = 1)
+
+        kafka -> insync: DELETE (Version 3)
+        insync -> tombstone: LockIfNews? (version = 3)
+      }
+
+      lock_backfill: Backfill obtained lock on row {
+        tombstone -> backfill: Yes news, row locked for next 30s
+        backfill -> postgres: Begin
+        backfill -> postgres: UPSERT Row
+        backfill -> tombstone: ReleaseLock
+        tombstone -> backfill: OK
+        backfill -> postgres: Commit
+      }
+
+      lock_insert: In-Sync obtained lock on row {
+        tombstone -> insync: Yes news, row locked for next 30s
+        insync -> postgres: Begin
+        insync -> postgres: DELETE Row
+        insync -> tombstone: ReleaseLock
+        tombstone -> insync: OK
+        insync -> postgres: Commit
+      }
+    }
+  }
 }
